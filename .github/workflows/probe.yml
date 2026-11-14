@@ -1,0 +1,10 @@
+name: probe
+on: [push, workflow_dispatch]
+jobs:
+  probe:
+    runs-on: craci
+    timeout-minutes: 5
+    steps:
+      - run: |
+          echo "runner: $RUNNER_NAME on $(uname -sr)"
+          curl -sI https://example.com | head -1
