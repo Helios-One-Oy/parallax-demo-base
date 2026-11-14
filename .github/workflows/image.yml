@@ -82,11 +82,26 @@ jobs:
           printf 'FROM %s:22\nLABEL com.northbound.check="consumer"\n' "$IMAGE" > Dockerfile
           cat Dockerfile
           docker build --pull -t consumer-check .
-      - name: Which bytes did the tag give us
+      # Docker asks for the tag with HEAD and then fetches by digest. This step
+      # fetches the manifest by its tag, so the CRACI trace of this job holds the
+      # tag and the hash of the bytes the tag gave, side by side.
+      - name: Resolve the tag to a digest
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          docker pull "$IMAGE:22" | tee pull.log
-          digest=$(grep -o 'sha256:[0-9a-f]*' pull.log | tail -1)
+          name=${IMAGE#ghcr.io/}
+          token=$(curl -fsS -u "${{ github.actor }}:$GH_TOKEN" \
+            "https://ghcr.io/token?service=ghcr.io&scope=repository:$name:pull" | sed -E 's/.*"token":"([^"]+)".*/\1/')
+          echo "::add-mask::$token"
+          curl -fsS -o manifest.json -H "Authorization: Bearer $token" \
+            -H "Accept: application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.docker.distribution.manifest.v2+json" \
+            "https://ghcr.io/v2/$name/manifests/22"
+          digest="sha256:$(sha256sum manifest.json | cut -d' ' -f1)"
+          echo "Tag $IMAGE:22 gives $digest"
           echo "Tag \`$IMAGE:22\` resolved to \`$digest\`" >> "$GITHUB_STEP_SUMMARY"
+      - name: What is in the image the build got
+        run: |
+          docker pull "$IMAGE:22"
           echo "Files under /etc/northbound in the image the build got:"
           docker run --rm --network none consumer-check sh -c 'ls /etc/northbound && cat /etc/northbound/*' \
             || echo "::warning::could not start a container from the image on this runner"
