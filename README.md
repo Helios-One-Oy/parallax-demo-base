@@ -11,6 +11,11 @@ Use it:
 FROM ghcr.io/helios-one-oy/parallax-demo-base:22
 ```
 
+A workflow in another repository of the organization can pull it with its own job
+token (`docker login ghcr.io` with `github.token`, `packages: read`) once that
+repository is added under the package's settings, "Manage Actions access", with the
+role Read. Without that the registry answers 403.
+
 It is `mirror.gcr.io/library/node:22-slim` plus `NODE_ENV=production`, `TZ=UTC`,
 `WORKDIR /app`, `USER node` and two text files under `/etc/northbound`. Nothing is
 fetched while the image is built.
@@ -24,5 +29,5 @@ fetched while the image is built.
 | `restore good image` | GitHub-hosted | Puts `:22` back on the last image our CRACI job built, and only if CRACI's provenance names one of our jobs for that digest. |
 
 After a repoint, run `image` with `build` off: the consumer pulls `:22` on a CRACI
-runner and gets a digest that no CRACI job of ours produced. Parallax (`images`)
-reports that pull.
+runner and gets a digest that no CRACI job of ours produced. CRACI's provenance
+endpoints answer 404 for that digest, and Parallax (`images`) reports the pull.
