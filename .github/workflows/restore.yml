@@ -1,0 +1,72 @@
+name: restore good image
+
+# Puts the tag :22 back on the last image our CRACI job built. The tag only
+# moves to a digest that CRACI's provenance says one of our jobs produced.
+# The same manifest bytes get the tag again, so the digest stays the same.
+# GitHub-hosted, because the CRACI API refuses calls from CRACI runners.
+on:
+  workflow_dispatch:
+    inputs:
+      digest:
+        description: "Manifest digest to put :22 on (empty: the last image our CRACI job built)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+  actions: read
+  packages: write
+
+env:
+  NAME: helios-one-oy/parallax-demo-base
+
+jobs:
+  restore:
+    name: restore :22
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Put :22 back on an image CRACI knows we built
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CRACI_API_TOKEN: ${{ secrets.CRACI_API_TOKEN }}
+          WANT: ${{ inputs.digest }}
+        run: |
+          set -euo pipefail
+          accept='application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.docker.distribution.manifest.v2+json'
+          token=$(curl -fsS -u "${{ github.actor }}:$GH_TOKEN" \
+            "https://ghcr.io/token?service=ghcr.io&scope=repository:$NAME:pull,push" | jq -r .token)
+          echo "::add-mask::$token"
+          digest_of() { curl -fsS -I -H "Authorization: Bearer $token" -H "Accept: $accept" \
+            "https://ghcr.io/v2/$NAME/manifests/$1" | tr -d '\r' | awk 'tolower($1)=="docker-content-digest:"{print $2}'; }
+
+          before=$(digest_of 22)
+          if [ -n "$WANT" ]; then good="$WANT"; else good=$(digest_of "$(scripts/last-good.sh)"); fi
+          test -n "$good"
+
+          # Ask CRACI who produced these bytes. No job of ours: stop.
+          code=$(curl -sS -o prov.json -w '%{http_code}' -H "Authorization: Bearer $CRACI_API_TOKEN" \
+            "https://api.craci.com/v1preview1/artifact-provenance/oci_manifest?digest=$good")
+          jobs=0
+          if [ "$code" = 200 ]; then jobs=$(jq '.jobs_created_in | length' prov.json); fi
+          echo "CRACI provenance for $good: HTTP $code, $jobs creating job(s)"
+          if [ "$jobs" -lt 1 ]; then
+            echo "::error::CRACI knows no job of ours that produced $good. The tag stays where it is."
+            exit 1
+          fi
+          jq -r '.jobs_created_in[] | "  built by \(.provider | tostring) at \(.accepted_at)"' prov.json
+
+          # Same bytes, tag moved: GET the manifest by digest, PUT it under :22.
+          curl -fsS -D head.txt -o manifest.json -H "Authorization: Bearer $token" -H "Accept: $accept" \
+            "https://ghcr.io/v2/$NAME/manifests/$good"
+          ctype=$(tr -d '\r' < head.txt | awk 'tolower($1)=="content-type:"{print $2}')
+          test "sha256:$(sha256sum manifest.json | cut -d' ' -f1)" = "$good"
+          curl -fsS -X PUT -H "Authorization: Bearer $token" -H "Content-Type: $ctype" \
+            --data-binary @manifest.json "https://ghcr.io/v2/$NAME/manifests/22" -o /dev/null
+          after=$(digest_of 22)
+          test "$after" = "$good"
+          {
+            echo "### Restore :22"
+            echo "- \`:22\` before: \`$before\`"
+            echo "- \`:22\` now: \`$after\` ($jobs CRACI job(s) of ours produced these bytes)"
+          } >> "$GITHUB_STEP_SUMMARY"

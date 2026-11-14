@@ -1,0 +1,43 @@
+name: replay image-repoint
+
+# Attack replay (KICS image, 22 Apr 2026): the tag :22 moves to bytes that no
+# CRACI job of ours produced. Harmless: the good image plus one text file.
+# It runs on a GitHub-hosted runner on purpose, so outside CRACI, like someone
+# pushing from a laptop with a stolen registry token.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+  packages: write
+
+env:
+  IMAGE: ghcr.io/helios-one-oy/parallax-demo-base
+
+jobs:
+  repoint:
+    name: repoint :22 from outside CRACI
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Push the good image plus one text file over :22
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "$GH_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          sha=$(scripts/last-good.sh)
+          docker pull "$IMAGE:$sha" | tee pull.log
+          good=$(grep -o 'sha256:[0-9a-f]*' pull.log | tail -1)
+          docker pull "$IMAGE:22" | tee before.log
+          before=$(grep -o 'sha256:[0-9a-f]*' before.log | tail -1)
+          docker build --provenance=false --build-arg "GOOD=$IMAGE@$good" -t "$IMAGE:22" replay
+          docker push "$IMAGE:22" | tee push.log
+          after=$(grep -o 'digest: sha256:[0-9a-f]*' push.log | tail -1 | cut -d' ' -f2)
+          test -n "$after"
+          {
+            echo "### Replay image-repoint"
+            echo "- last image built by our CRACI job: \`$IMAGE:$sha\` = \`$good\`"
+            echo "- \`:22\` before: \`$before\`"
+            echo "- \`:22\` now: \`$after\` (pushed from this GitHub-hosted runner, not from CRACI)"
+          } >> "$GITHUB_STEP_SUMMARY"

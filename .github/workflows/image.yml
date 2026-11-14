@@ -1,0 +1,92 @@
+name: image
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - Dockerfile
+      - rootfs/**
+      - .github/workflows/image.yml
+  workflow_dispatch:
+    inputs:
+      build:
+        description: "Build and push the image first. Off: only run the consumer."
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+env:
+  IMAGE: ghcr.io/helios-one-oy/parallax-demo-base
+
+jobs:
+  # The only job that is allowed to produce the base image. It runs on a CRACI
+  # runner, so CRACI records which job pushed which manifest and layer.
+  image:
+    name: image
+    if: github.event_name == 'push' || inputs.build
+    runs-on: craci
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      digest: ${{ steps.push.outputs.digest }}
+    steps:
+      - uses: cracicorp/setup@v1
+        with:
+          size: "2"
+          image: "default"
+      - uses: actions/checkout@v4
+      - name: Stamp the release file
+        run: |
+          printf 'image=northbound-base\nnode=22\ncommit=%s\nrun=%s\n' "$GITHUB_SHA" "$GITHUB_RUN_ID" \
+            > rootfs/etc/northbound/base-release
+      - name: Build and push the base image
+        id: push
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "$GH_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          docker version --format 'docker client {{.Client.Version}} server {{.Server.Version}}'
+          docker build -t "$IMAGE:${{ github.sha }}" -t "$IMAGE:22" .
+          docker push "$IMAGE:${{ github.sha }}"
+          docker push "$IMAGE:22" | tee push.log
+          digest=$(grep -o 'digest: sha256:[0-9a-f]*' push.log | tail -1 | cut -d' ' -f2)
+          test -n "$digest"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          echo "Pushed \`$IMAGE:22\` and \`:${{ github.sha }}\` as \`$digest\`" >> "$GITHUB_STEP_SUMMARY"
+
+  # Proof that a build on a CRACI runner can pull the private base image:
+  # log in to ghcr.io with the job token, then build FROM the tag.
+  consumer:
+    name: consumer (build FROM the base)
+    needs: image
+    if: ${{ !cancelled() && (needs.image.result == 'success' || needs.image.result == 'skipped') }}
+    runs-on: craci
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: cracicorp/setup@v1
+        with:
+          size: "1"
+          image: "default"
+      - name: Log in to ghcr.io
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: echo "$GH_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+      - name: Build an image FROM the private base
+        run: |
+          mkdir consumer && cd consumer
+          printf 'FROM %s:22\nLABEL com.northbound.check="consumer"\n' "$IMAGE" > Dockerfile
+          cat Dockerfile
+          docker build --pull -t consumer-check .
+      - name: Which bytes did the tag give us
+        run: |
+          docker pull "$IMAGE:22" | tee pull.log
+          digest=$(grep -o 'sha256:[0-9a-f]*' pull.log | tail -1)
+          echo "Tag \`$IMAGE:22\` resolved to \`$digest\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "Files under /etc/northbound in the image the build got:"
+          docker run --rm --network none consumer-check sh -c 'ls /etc/northbound && cat /etc/northbound/*' \
+            || echo "::warning::could not start a container from the image on this runner"

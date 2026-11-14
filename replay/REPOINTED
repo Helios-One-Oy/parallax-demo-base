@@ -1,0 +1,4 @@
+Parallax replay "image-repoint": harmless simulation of the KICS image tag repoint (22 Apr 2026).
+This image was not built by the "image" workflow on a CRACI runner. It was pushed over the
+tag :22 from a GitHub-hosted runner, the way someone with a stolen registry token would
+push from a laptop. It is the good base image plus this one text file.

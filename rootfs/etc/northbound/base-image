@@ -1,0 +1,3 @@
+Northbound Dispatch base image for Node services.
+Built only by the "image" workflow of Helios-One-Oy/parallax-demo-base on CRACI runners.
+The file base-release next to this one names the commit and the run that built it.
