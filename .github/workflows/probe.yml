@@ -2,37 +2,15 @@ name: probe
 on: { push: { branches: [main] }, workflow_dispatch: {} }
 permissions: { contents: read }
 jobs:
-  api:
-    name: api (${{ matrix.mode }})
+  image:
+    name: image
     runs-on: craci
-    strategy:
-      fail-fast: false
-      matrix:
-        mode: [default, audit, connection]
     steps:
-      - if: matrix.mode == 'default'
-        uses: cracicorp/setup@v1
+      - uses: cracicorp/setup@v1
         with: { size: "1" }
-      - if: matrix.mode == 'audit'
-        uses: cracicorp/setup@v1
-        with: { size: "1", template: audit }
-      - if: matrix.mode == 'connection'
-        uses: cracicorp/setup@v1
-        with:
-          size: "1"
-          network: |
-            default: allow
-            connections:
-              - tls:
-                  serverNamePatterns: [api.craci.com]
-                  ports: [443]
-      - name: Call the CRACI API from inside the job
-        env:
-          CRACI_API_TOKEN: ${{ secrets.CRACI_API_TOKEN }}
+      - name: Which registries can a CRACI build pull a Node base image from
         run: |
-          U='https://api.craci.com/v1preview1/jobs?status=active'
-          echo "with token:"; curl -s -o body.txt -D hdr.txt -w '%{http_code} %{size_download}\n' -H "Authorization: Bearer $CRACI_API_TOKEN" "$U" || true
-          head -c 200 body.txt; echo; grep -i -E '^(server|via|content-type|x-|cf-)' hdr.txt || true
-          echo "without token:"; curl -s -o body2.txt -w '%{http_code} %{size_download}\n' "$U" || true
-          head -c 200 body2.txt; echo
-          echo "issuer of the certificate seen:"; curl -sv -o /dev/null https://api.craci.com/ 2>&1 | grep -i -E 'issuer|subject:' || true
+          for img in node:22-slim mirror.gcr.io/library/node:22-slim public.ecr.aws/docker/library/node:22-slim ghcr.io/nodejs/devcontainer:nightly quay.io/nodejs/node:22 cgr.dev/chainguard/node:latest; do
+            printf 'FROM %s\nRUN node --version\n' "$img" > Dockerfile
+            if docker build -q -t probe . >out.txt 2>&1; then echo "OK   $img"; else echo "FAIL $img: $(grep -m1 -E 'ERROR|error' out.txt | cut -c1-200)"; fi
+          done
